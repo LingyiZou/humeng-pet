@@ -195,6 +195,20 @@ body {
   font-size: 12px;
 }
 
+.schedule-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 8px;
+  color: #76513d;
+  font-size: 12px;
+}
+
+.schedule-grid input {
+  min-height: 34px;
+  padding: 6px 8px;
+}
+
 .dialogue-form button {
   align-self: flex-end;
   padding: 6px 12px;

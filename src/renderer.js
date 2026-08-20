@@ -13,6 +13,13 @@ const durationForm = document.getElementById("duration-form");
 const durationInput = document.getElementById("duration-input");
 const durationError = document.getElementById("duration-error");
 const durationClose = document.getElementById("duration-close");
+const scheduleModal = document.getElementById("schedule-modal");
+const scheduleForm = document.getElementById("schedule-form");
+const scheduleWorkInput = document.getElementById("schedule-work-input");
+const scheduleFollowupInput = document.getElementById("schedule-followup-input");
+const scheduleBreakInput = document.getElementById("schedule-break-input");
+const scheduleError = document.getElementById("schedule-error");
+const scheduleClose = document.getElementById("schedule-close");
 
 const guardLines = [
   "狐朦已就位，正在认真站岗。",
@@ -24,24 +31,6 @@ const interactiveLines = [
   "你找我呀，我在岗。",
   "有事可以点点我。",
   "我刚刚有在看你。"
-];
-
-const proactiveLines = [
-  "狐朦从角落窜出来了，该歇一会了。",
-  "你已经连续忙了 40 分钟，起来动一下。",
-  "先别硬撑，狐朦催你休息。"
-];
-
-const followupLines = [
-  "你还在继续忙，10 分钟后我会再来提醒。",
-  "狐朦发现你没停下，那我十分钟后再窜一次。",
-  "这次你没休息够，我先退下，10 分钟后回来。"
-];
-
-const resetLines = [
-  "这次休息够了，狐朦把专注计时重新拨回 40 分钟。",
-  "你已经休息满 5 分钟，下一次提醒从现在重新算。",
-  "休息有效，狐朦回角落继续陪你专注。"
 ];
 
 let awakeTimer = null;
@@ -105,6 +94,11 @@ function showDurationError(message = "") {
   durationError.classList.toggle("hidden", !message);
 }
 
+function showScheduleError(message = "") {
+  scheduleError.textContent = message;
+  scheduleError.classList.toggle("hidden", !message);
+}
+
 async function refreshDialogues() {
   customDialogues = await window.petAPI.getDialogues();
   renderDialogueList();
@@ -121,8 +115,14 @@ function closeDurationSetup() {
   showDurationError();
 }
 
+function closeWorkSchedule() {
+  scheduleModal.classList.add("hidden");
+  showScheduleError();
+}
+
 async function openDialogueManager() {
   closeDurationSetup();
+  closeWorkSchedule();
   showDialogueError();
   dialogueModal.classList.remove("hidden");
   await refreshDialogues();
@@ -131,10 +131,28 @@ async function openDialogueManager() {
 
 function openDurationSetup() {
   closeDialogueManager();
+  closeWorkSchedule();
   durationInput.value = "";
   showDurationError();
   durationModal.classList.remove("hidden");
   durationInput.focus();
+}
+
+async function openWorkSchedule() {
+  closeDialogueManager();
+  closeDurationSetup();
+  showScheduleError();
+
+  try {
+    const schedule = await window.petAPI.getWorkSchedule();
+    scheduleWorkInput.value = schedule.workMinutes;
+    scheduleFollowupInput.value = schedule.followupMinutes;
+    scheduleBreakInput.value = schedule.breakMinutes;
+    scheduleModal.classList.remove("hidden");
+    scheduleWorkInput.focus();
+  } catch (error) {
+    speak(error.message || "读取工作安排失败，请稍后重试。", 4200);
+  }
 }
 
 function createDialogueButton(label, action, id) {
@@ -259,7 +277,7 @@ pet.addEventListener("mouseenter", () => {
 });
 
 pet.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0 || !dialogueModal.classList.contains("hidden") || !durationModal.classList.contains("hidden")) {
+  if (event.button !== 0 || !dialogueModal.classList.contains("hidden") || !durationModal.classList.contains("hidden") || !scheduleModal.classList.contains("hidden")) {
     return;
   }
 
@@ -397,6 +415,32 @@ durationModal.addEventListener("click", (event) => {
   }
 });
 
+scheduleForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  try {
+    const result = await window.petAPI.setWorkSchedule({
+      workMinutes: Number(scheduleWorkInput.value),
+      followupMinutes: Number(scheduleFollowupInput.value),
+      breakMinutes: Number(scheduleBreakInput.value)
+    });
+    closeWorkSchedule();
+    setAwake(true);
+    const { workMinutes, followupMinutes, breakMinutes } = result.schedule;
+    const customNotice = result.keepsCustomCountdown ? "当前一次性倒计时保持不变；" : "";
+    speak(`${customNotice}工作 ${workMinutes} 分钟、未休息时每 ${followupMinutes} 分钟提醒、休息 ${breakMinutes} 分钟后继续。`, 6200);
+  } catch (error) {
+    showScheduleError(error.message);
+  }
+});
+
+scheduleClose.addEventListener("click", closeWorkSchedule);
+scheduleModal.addEventListener("click", (event) => {
+  if (event.target === scheduleModal) {
+    closeWorkSchedule();
+  }
+});
+
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
     return;
@@ -409,6 +453,10 @@ window.addEventListener("keydown", (event) => {
   if (!durationModal.classList.contains("hidden")) {
     closeDurationSetup();
   }
+
+  if (!scheduleModal.classList.contains("hidden")) {
+    closeWorkSchedule();
+  }
 });
 
 window.petAPI.onSummon(() => {
@@ -420,22 +468,35 @@ window.petAPI.onCornerChanged((corner) => {
   repositionShell(corner);
 });
 
-window.petAPI.onFocusNudge((kind) => {
-  const linePool = kind === "followup" ? followupLines : proactiveLines;
+window.petAPI.onFocusNudge(async (kind) => {
   if (kind === "custom") {
     doNudge("约定的工作时长到了，狐朦来提醒你活动一下。", 4200);
     return;
   }
-  doNudge(randomPick(linePool));
+  const schedule = await window.petAPI.getWorkSchedule();
+  if (kind === "followup") {
+    doNudge(`你还在继续忙，我会在 ${schedule.followupMinutes} 分钟后再来提醒。`);
+    return;
+  }
+  doNudge(randomPick([
+    "狐朦从角落窜出来了，该歇一会了。",
+    `你已经连续忙了 ${schedule.workMinutes} 分钟，起来动一下。`,
+    "先别硬撑，狐朦催你休息。"
+  ]));
 });
 
-window.petAPI.onFocusReset(() => {
+window.petAPI.onFocusReset(async () => {
   setAwake(false);
   if (keepBubbleVisible) {
     hideBubble();
     return;
   }
-  speak(randomPick(resetLines), 3800);
+  const schedule = await window.petAPI.getWorkSchedule();
+  speak(randomPick([
+    `这次休息够了，狐朦把专注计时重新拨回 ${schedule.workMinutes} 分钟。`,
+    `你已经休息满 ${schedule.breakMinutes} 分钟，下一次提醒从现在重新算。`,
+    "休息有效，狐朦回角落继续陪你专注。"
+  ]), 3800);
 });
 
 window.petAPI.onBreakQualified(() => {
@@ -456,8 +517,9 @@ window.petAPI.onSprintEnd(() => {
   pet.classList.remove("is-sprinting");
 });
 
-window.petAPI.onManualSprint(() => {
-  doNudge("出发！狐朦重新为你计时 40 分钟。", 4200);
+window.petAPI.onManualSprint(async () => {
+  const schedule = await window.petAPI.getWorkSchedule();
+  doNudge(`出发！狐朦重新为你计时 ${schedule.workMinutes} 分钟。`, 4200);
 });
 
 window.petAPI.onShowWorkSummary((summary) => {
@@ -471,6 +533,10 @@ window.petAPI.onOpenDialogueManager(() => {
 
 window.petAPI.onOpenDurationSetup(() => {
   openDurationSetup();
+});
+
+window.petAPI.onOpenWorkSchedule(() => {
+  openWorkSchedule();
 });
 
 window.addEventListener("DOMContentLoaded", async () => {

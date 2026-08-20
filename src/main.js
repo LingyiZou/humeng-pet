@@ -13,15 +13,18 @@ let customFocusTimer = null;
 let workStatsPath = "";
 let workStatsDirty = false;
 let workStats = {};
+let workSchedulePath = "";
 let dialoguesPath = "";
 let customDialogues = [];
 let restingBounds = null;
 let dragState = null;
 
 const PET_SIZE = { width: 260, height: 320 };
-const BREAK_THRESHOLD_SECONDS = 5 * 60;
-const INITIAL_FOCUS_MS = 40 * 60 * 1000;
-const FOLLOWUP_FOCUS_MS = 10 * 60 * 1000;
+const DEFAULT_WORK_SCHEDULE = Object.freeze({
+  workMinutes: 40,
+  followupMinutes: 10,
+  breakMinutes: 5
+});
 const BEHAVIOR_CHECK_MS = 60 * 1000;
 const WORK_STATS_SAMPLE_MS = 1000;
 const WORK_STATS_SAVE_MS = 30 * 1000;
@@ -29,7 +32,8 @@ const WORK_STATS_SAVE_MS = 30 * 1000;
 let isActive = true;
 let hasQualifiedBreak = false;
 let isWaitingForReturn = false;
-let nextFocusNudgeAt = Date.now() + INITIAL_FOCUS_MS;
+let workSchedule = { ...DEFAULT_WORK_SCHEDULE };
+let nextFocusNudgeAt = Date.now() + DEFAULT_WORK_SCHEDULE.workMinutes * 60 * 1000;
 let focusNudgeCount = 0;
 let focusStartedAt = Date.now();
 let customFocusDurationMs = null;
@@ -55,6 +59,60 @@ function loadWorkStats() {
     }
     workStats = {};
   }
+}
+
+function normalizeWorkSchedule(schedule) {
+  if (!schedule || typeof schedule !== "object") {
+    throw new Error("工作安排无效。");
+  }
+
+  const normalized = {};
+  const labels = {
+    workMinutes: "工作时间",
+    followupMinutes: "再次提醒间隔",
+    breakMinutes: "休息时间"
+  };
+
+  for (const key of Object.keys(DEFAULT_WORK_SCHEDULE)) {
+    const value = schedule[key];
+    if (!Number.isInteger(value) || value < 1 || value > 480) {
+      throw new Error(`${labels[key]}请输入 1 到 480 之间的整数分钟。`);
+    }
+    normalized[key] = value;
+  }
+
+  return normalized;
+}
+
+function loadWorkSchedule() {
+  workSchedulePath = path.join(app.getPath("userData"), "work-schedule.json");
+
+  try {
+    const raw = fs.readFileSync(workSchedulePath, "utf8");
+    workSchedule = normalizeWorkSchedule(JSON.parse(raw));
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.error("Failed to load work schedule:", error);
+    }
+    workSchedule = { ...DEFAULT_WORK_SCHEDULE };
+  }
+}
+
+function saveWorkSchedule() {
+  try {
+    fs.writeFileSync(workSchedulePath, JSON.stringify(workSchedule, null, 2));
+  } catch (error) {
+    console.error("Failed to save work schedule:", error);
+    throw new Error("保存工作安排失败，请稍后重试。");
+  }
+}
+
+function getBreakThresholdSeconds() {
+  return workSchedule.breakMinutes * 60;
+}
+
+function getFocusIntervalMilliseconds() {
+  return (focusNudgeCount === 0 ? workSchedule.workMinutes : workSchedule.followupMinutes) * 60 * 1000;
 }
 
 function loadCustomDialogues() {
@@ -161,7 +219,7 @@ function formatDuration(milliseconds) {
 function getWorkPhase(now = Date.now()) {
   const idleSeconds = powerMonitor.getSystemIdleTime();
 
-  if (idleSeconds >= BREAK_THRESHOLD_SECONDS) {
+  if (idleSeconds >= getBreakThresholdSeconds()) {
     return {
       key: "resting",
       label: "有效休息中",
@@ -180,7 +238,7 @@ function getWorkPhase(now = Date.now()) {
     };
   }
 
-  const intervalMilliseconds = focusNudgeCount === 0 ? INITIAL_FOCUS_MS : FOLLOWUP_FOCUS_MS;
+  const intervalMilliseconds = getFocusIntervalMilliseconds();
   const intervalLabel = focusNudgeCount === 0 ? "首轮专注" : "加时专注";
 
   return {
@@ -210,8 +268,39 @@ function resetFocusTimer() {
   isWaitingForReturn = false;
   focusNudgeCount = 0;
   focusStartedAt = now;
-  nextFocusNudgeAt = now + INITIAL_FOCUS_MS;
+  nextFocusNudgeAt = now + getFocusIntervalMilliseconds();
   customFocusDurationMs = null;
+}
+
+function setWorkSchedule(schedule) {
+  const nextSchedule = normalizeWorkSchedule(schedule);
+  const now = Date.now();
+  const keepsCustomCountdown = customFocusDurationMs !== null;
+
+  workSchedule = nextSchedule;
+  saveWorkSchedule();
+
+  if (!keepsCustomCountdown) {
+    nextFocusNudgeAt = focusStartedAt + getFocusIntervalMilliseconds();
+  }
+
+  const idleSeconds = powerMonitor.getSystemIdleTime();
+  if (idleSeconds >= getBreakThresholdSeconds()) {
+    if (!hasQualifiedBreak) {
+      hasQualifiedBreak = true;
+      isWaitingForReturn = true;
+      mainWindow?.webContents.send("pet:break-qualified");
+    }
+    isActive = false;
+  } else if (!keepsCustomCountdown && now >= nextFocusNudgeAt) {
+    triggerFocusNudge(now);
+  }
+
+  return {
+    schedule: { ...workSchedule },
+    summary: getWorkSummary(),
+    keepsCustomCountdown
+  };
 }
 
 function setCustomFocusDuration(minutes) {
@@ -254,6 +343,10 @@ function showContextMenu() {
     {
       label: "录入剩余工作时长",
       click: () => mainWindow?.webContents.send("pet:open-duration-setup")
+    },
+    {
+      label: "工作安排",
+      click: () => mainWindow?.webContents.send("pet:open-work-schedule")
     },
     { type: "separator" },
     {
@@ -348,7 +441,7 @@ function triggerFocusNudge(now = Date.now()) {
     : focusNudgeCount === 0 ? "initial" : "followup";
   focusNudgeCount += 1;
   focusStartedAt = now;
-  nextFocusNudgeAt = now + FOLLOWUP_FOCUS_MS;
+  nextFocusNudgeAt = now + getFocusIntervalMilliseconds();
   customFocusDurationMs = null;
   stopCustomFocusTimer();
   runSprint();
@@ -368,7 +461,7 @@ function scheduleCustomFocusNudge() {
       return;
     }
 
-    if (powerMonitor.getSystemIdleTime() < BREAK_THRESHOLD_SECONDS) {
+    if (powerMonitor.getSystemIdleTime() < getBreakThresholdSeconds()) {
       triggerFocusNudge();
     }
   }, delay);
@@ -458,8 +551,8 @@ function startBehaviorLoop() {
 
     const now = Date.now();
     const idleSeconds = powerMonitor.getSystemIdleTime();
-    const nowActive = idleSeconds < BREAK_THRESHOLD_SECONDS;
-    const nowOnBreak = idleSeconds >= BREAK_THRESHOLD_SECONDS;
+    const nowActive = idleSeconds < getBreakThresholdSeconds();
+    const nowOnBreak = idleSeconds >= getBreakThresholdSeconds();
 
     if (nowOnBreak && !hasQualifiedBreak) {
       hasQualifiedBreak = true;
@@ -496,7 +589,7 @@ function startWorkStatsLoop() {
   workStatsTimer = setInterval(() => {
     const idleSeconds = powerMonitor.getSystemIdleTime();
 
-    if (idleSeconds < BREAK_THRESHOLD_SECONDS) {
+    if (idleSeconds < getBreakThresholdSeconds()) {
       addWorkedTime(WORK_STATS_SAMPLE_MS);
     }
 
@@ -508,6 +601,7 @@ function startWorkStatsLoop() {
 
 app.whenReady().then(() => {
   loadWorkStats();
+  loadWorkSchedule();
   loadCustomDialogues();
   resetFocusTimer();
   createWindow();
@@ -550,6 +644,8 @@ ipcMain.handle("pet:get-corner", () => currentCorner);
 ipcMain.handle("pet:show-context-menu", showContextMenu);
 ipcMain.handle("pet:get-today-work-summary", getWorkSummary);
 ipcMain.handle("pet:set-custom-focus-duration", (_, minutes) => setCustomFocusDuration(minutes));
+ipcMain.handle("pet:get-work-schedule", () => ({ ...workSchedule }));
+ipcMain.handle("pet:set-work-schedule", (_, schedule) => setWorkSchedule(schedule));
 ipcMain.handle("pet:get-dialogues", () => customDialogues);
 ipcMain.handle("pet:add-dialogue", (_, text) => {
   const dialogue = {

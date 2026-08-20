@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld("petAPI", {
   showContextMenu: () => ipcRenderer.invoke("pet:show-context-menu"),
   getTodayWorkSummary: () => ipcRenderer.invoke("pet:get-today-work-summary"),
   setCustomFocusDuration: (minutes) => ipcRenderer.invoke("pet:set-custom-focus-duration", minutes),
+  getWorkSchedule: () => ipcRenderer.invoke("pet:get-work-schedule"),
+  setWorkSchedule: (schedule) => ipcRenderer.invoke("pet:set-work-schedule", schedule),
   getDialogues: () => ipcRenderer.invoke("pet:get-dialogues"),
   addDialogue: (text) => ipcRenderer.invoke("pet:add-dialogue", text),
   updateDialogue: (id, text) => ipcRenderer.invoke("pet:update-dialogue", id, text),
@@ -25,5 +27,6 @@ contextBridge.exposeInMainWorld("petAPI", {
   onManualSprint: (callback) => ipcRenderer.on("pet:manual-sprint", callback),
   onShowWorkSummary: (callback) => ipcRenderer.on("pet:show-work-summary", (_, summary) => callback(summary)),
   onOpenDialogueManager: (callback) => ipcRenderer.on("pet:open-dialogue-manager", callback),
-  onOpenDurationSetup: (callback) => ipcRenderer.on("pet:open-duration-setup", callback)
+  onOpenDurationSetup: (callback) => ipcRenderer.on("pet:open-duration-setup", callback),
+  onOpenWorkSchedule: (callback) => ipcRenderer.on("pet:open-work-schedule", callback)
 });
