@@ -1,0 +1,14 @@
+# Node.js dependencies and build output
+node_modules/
+release/
+dist/
+
+# Electron Builder local configuration and logs
+electron-builder.env
+*.log
+npm-debug.log*
+
+# Operating-system and editor files
+.DS_Store
+.vscode/
+.idea/
