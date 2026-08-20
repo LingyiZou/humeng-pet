@@ -1,0 +1,35 @@
+{
+  "name": "fumeng-pet",
+  "version": "0.1.0",
+  "description": "A desktop fox pet that naps in screen corners and occasionally interacts with the user.",
+  "main": "src/main.js",
+  "scripts": {
+    "asset:chroma": "node scripts/remove-chroma.js",
+    "prestart": "node scripts/ensure-electron.js",
+    "start": "electron .",
+    "dist:mac": "electron-builder --mac dmg zip --universal --publish never"
+  },
+  "devDependencies": {
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "pngjs": "^7.0.0"
+  },
+  "build": {
+    "appId": "com.lingyizou.fumengpet",
+    "productName": "狐朦桌宠",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
+  }
+}

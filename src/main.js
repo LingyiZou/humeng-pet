@@ -1,0 +1,600 @@
+// 狐朦桌宠主进程：管理透明窗口、专注计时、工时统计与右键菜单。
+const { app, BrowserWindow, globalShortcut, ipcMain, Menu, powerMonitor, screen } = require("electron");
+const { randomUUID } = require("crypto");
+const fs = require("fs");
+const path = require("path");
+
+let mainWindow = null;
+let currentCorner = "bottom-right";
+let behaviorTimer = null;
+let sprintTimer = null;
+let workStatsTimer = null;
+let customFocusTimer = null;
+let workStatsPath = "";
+let workStatsDirty = false;
+let workStats = {};
+let dialoguesPath = "";
+let customDialogues = [];
+let restingBounds = null;
+let dragState = null;
+
+const PET_SIZE = { width: 260, height: 320 };
+const BREAK_THRESHOLD_SECONDS = 5 * 60;
+const INITIAL_FOCUS_MS = 40 * 60 * 1000;
+const FOLLOWUP_FOCUS_MS = 10 * 60 * 1000;
+const BEHAVIOR_CHECK_MS = 60 * 1000;
+const WORK_STATS_SAMPLE_MS = 1000;
+const WORK_STATS_SAVE_MS = 30 * 1000;
+
+let isActive = true;
+let hasQualifiedBreak = false;
+let isWaitingForReturn = false;
+let nextFocusNudgeAt = Date.now() + INITIAL_FOCUS_MS;
+let focusNudgeCount = 0;
+let focusStartedAt = Date.now();
+let customFocusDurationMs = null;
+
+function getDateKey(timestamp = Date.now()) {
+  const date = new Date(timestamp);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function loadWorkStats() {
+  workStatsPath = path.join(app.getPath("userData"), "work-stats.json");
+
+  try {
+    const raw = fs.readFileSync(workStatsPath, "utf8");
+    const parsed = JSON.parse(raw);
+    workStats = parsed && typeof parsed === "object" ? parsed : {};
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.error("Failed to load work stats:", error);
+    }
+    workStats = {};
+  }
+}
+
+function loadCustomDialogues() {
+  dialoguesPath = path.join(app.getPath("userData"), "custom-dialogues.json");
+
+  try {
+    const raw = fs.readFileSync(dialoguesPath, "utf8");
+    const parsed = JSON.parse(raw);
+    customDialogues = Array.isArray(parsed)
+      ? parsed.filter((item) => item && typeof item.id === "string" && typeof item.text === "string")
+      : [];
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.error("Failed to load custom dialogues:", error);
+    }
+    customDialogues = [];
+  }
+}
+
+function saveCustomDialogues() {
+  try {
+    fs.writeFileSync(dialoguesPath, JSON.stringify(customDialogues, null, 2));
+  } catch (error) {
+    console.error("Failed to save custom dialogues:", error);
+    throw new Error("保存对话失败，请稍后重试。");
+  }
+}
+
+function normalizeDialogueText(text) {
+  if (typeof text !== "string") {
+    throw new Error("对话内容无效。");
+  }
+
+  const normalized = text.trim();
+
+  if (!normalized) {
+    throw new Error("对话内容不能为空。");
+  }
+
+  if (normalized.length > 160) {
+    throw new Error("每条对话最多 160 个字符。");
+  }
+
+  return normalized;
+}
+
+function saveWorkStats() {
+  if (!workStatsDirty || !workStatsPath) {
+    return;
+  }
+
+  try {
+    fs.writeFileSync(workStatsPath, JSON.stringify(workStats, null, 2));
+    workStatsDirty = false;
+  } catch (error) {
+    console.error("Failed to save work stats:", error);
+  }
+}
+
+function addWorkedTime(milliseconds) {
+  if (milliseconds <= 0) {
+    return;
+  }
+
+  const todayKey = getDateKey();
+  workStats[todayKey] = (workStats[todayKey] || 0) + milliseconds;
+  workStatsDirty = true;
+}
+
+function getTodayWorkedMilliseconds() {
+  return workStats[getDateKey()] || 0;
+}
+
+function formatWorkedTime(milliseconds) {
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+
+  if (hours > 0) {
+    return `今天已经工作 ${hours} 小时 ${minutes} 分钟`;
+  }
+
+  return `今天已经工作 ${minutes} 分钟`;
+}
+
+function formatDuration(milliseconds) {
+  const safeMilliseconds = Math.max(0, milliseconds);
+  const totalSeconds = Math.floor(safeMilliseconds / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours} 小时 ${minutes} 分钟`;
+  }
+
+  if (minutes > 0) {
+    return `${minutes} 分 ${seconds} 秒`;
+  }
+
+  return `${seconds} 秒`;
+}
+
+function getWorkPhase(now = Date.now()) {
+  const idleSeconds = powerMonitor.getSystemIdleTime();
+
+  if (idleSeconds >= BREAK_THRESHOLD_SECONDS) {
+    return {
+      key: "resting",
+      label: "有效休息中",
+      detail: `已休息 ${formatDuration(idleSeconds * 1000)}`
+    };
+  }
+
+  if (customFocusDurationMs !== null) {
+    return {
+      key: "custom-focus",
+      label: "自定义倒计时",
+      detail: `本阶段 ${formatDuration(now - focusStartedAt)}，距奔跑 ${formatDuration(nextFocusNudgeAt - now)}`,
+      durationMilliseconds: customFocusDurationMs,
+      elapsedMilliseconds: Math.max(0, now - focusStartedAt),
+      remainingMilliseconds: Math.max(0, nextFocusNudgeAt - now)
+    };
+  }
+
+  const intervalMilliseconds = focusNudgeCount === 0 ? INITIAL_FOCUS_MS : FOLLOWUP_FOCUS_MS;
+  const intervalLabel = focusNudgeCount === 0 ? "首轮专注" : "加时专注";
+
+  return {
+    key: focusNudgeCount === 0 ? "initial-focus" : "followup-focus",
+    label: intervalLabel,
+    detail: `本阶段 ${formatDuration(now - focusStartedAt)}，距提醒 ${formatDuration(nextFocusNudgeAt - now)}`,
+    durationMilliseconds: intervalMilliseconds,
+    elapsedMilliseconds: Math.max(0, now - focusStartedAt),
+    remainingMilliseconds: Math.max(0, nextFocusNudgeAt - now)
+  };
+}
+
+function getWorkSummary() {
+  const milliseconds = getTodayWorkedMilliseconds();
+  return {
+    milliseconds,
+    text: formatWorkedTime(milliseconds),
+    phase: getWorkPhase()
+  };
+}
+
+function resetFocusTimer() {
+  stopCustomFocusTimer();
+  const now = Date.now();
+  isActive = true;
+  hasQualifiedBreak = false;
+  isWaitingForReturn = false;
+  focusNudgeCount = 0;
+  focusStartedAt = now;
+  nextFocusNudgeAt = now + INITIAL_FOCUS_MS;
+  customFocusDurationMs = null;
+}
+
+function setCustomFocusDuration(minutes) {
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 480) {
+    throw new Error("请输入 1 到 480 之间的整数分钟。");
+  }
+
+  const now = Date.now();
+  isActive = true;
+  hasQualifiedBreak = false;
+  isWaitingForReturn = false;
+  focusNudgeCount = 0;
+  focusStartedAt = now;
+  customFocusDurationMs = minutes * 60 * 1000;
+  nextFocusNudgeAt = now + customFocusDurationMs;
+  scheduleCustomFocusNudge();
+  return getWorkSummary();
+}
+
+function runAndResetFocusTimer() {
+  resetFocusTimer();
+  runSprint();
+  mainWindow?.webContents.send("pet:manual-sprint");
+}
+
+function showContextMenu() {
+  if (!mainWindow) {
+    return;
+  }
+
+  const menu = Menu.buildFromTemplate([
+    {
+      label: "奔跑吧狐朦",
+      click: runAndResetFocusTimer
+    },
+    {
+      label: "工作时间",
+      click: () => mainWindow?.webContents.send("pet:show-work-summary", getWorkSummary())
+    },
+    {
+      label: "录入剩余工作时长",
+      click: () => mainWindow?.webContents.send("pet:open-duration-setup")
+    },
+    { type: "separator" },
+    {
+      label: "添加对话",
+      click: () => mainWindow?.webContents.send("pet:open-dialogue-manager")
+    }
+  ]);
+
+  menu.popup({ window: mainWindow });
+}
+
+function getCornerBounds(corner) {
+  const display = screen.getPrimaryDisplay();
+  const area = display.workArea;
+  const margin = 18;
+
+  const positions = {
+    "top-left": {
+      x: area.x + margin,
+      y: area.y + margin
+    },
+    "top-right": {
+      x: area.x + area.width - PET_SIZE.width - margin,
+      y: area.y + margin
+    },
+    "bottom-left": {
+      x: area.x + margin,
+      y: area.y + area.height - PET_SIZE.height - margin
+    },
+    "bottom-right": {
+      x: area.x + area.width - PET_SIZE.width - margin,
+      y: area.y + area.height - PET_SIZE.height - margin
+    }
+  };
+
+  return positions[corner] || positions["bottom-right"];
+}
+
+function moveToCorner(corner) {
+  if (!mainWindow) {
+    return;
+  }
+
+  currentCorner = corner;
+  const target = getCornerBounds(corner);
+  restingBounds = { ...target, ...PET_SIZE };
+  mainWindow.setBounds(restingBounds, true);
+  mainWindow.webContents.send("pet:corner-changed", corner);
+}
+
+function getRestingBounds() {
+  return restingBounds || { ...getCornerBounds(currentCorner), ...PET_SIZE };
+}
+
+function moveWindowToPointer(screenX, screenY) {
+  if (!mainWindow || !dragState || !Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+    return;
+  }
+
+  const display = screen.getDisplayNearestPoint({ x: screenX, y: screenY });
+  const area = display.workArea;
+  const maximumX = Math.max(area.x, area.x + area.width - PET_SIZE.width);
+  const maximumY = Math.max(area.y, area.y + area.height - PET_SIZE.height);
+  const x = Math.round(Math.min(maximumX, Math.max(area.x, screenX - dragState.offsetX)));
+  const y = Math.round(Math.min(maximumY, Math.max(area.y, screenY - dragState.offsetY)));
+
+  restingBounds = { x, y, ...PET_SIZE };
+  mainWindow.setBounds(restingBounds, true);
+}
+
+function stopSprint() {
+  if (sprintTimer) {
+    clearInterval(sprintTimer);
+    sprintTimer = null;
+  }
+}
+
+function stopCustomFocusTimer() {
+  if (customFocusTimer) {
+    clearTimeout(customFocusTimer);
+    customFocusTimer = null;
+  }
+}
+
+function triggerFocusNudge(now = Date.now()) {
+  if (!mainWindow || now < nextFocusNudgeAt) {
+    return false;
+  }
+
+  const nudgeKind = customFocusDurationMs !== null
+    ? "custom"
+    : focusNudgeCount === 0 ? "initial" : "followup";
+  focusNudgeCount += 1;
+  focusStartedAt = now;
+  nextFocusNudgeAt = now + FOLLOWUP_FOCUS_MS;
+  customFocusDurationMs = null;
+  stopCustomFocusTimer();
+  runSprint();
+  mainWindow.webContents.send("pet:focus-nudge", nudgeKind);
+  return true;
+}
+
+function scheduleCustomFocusNudge() {
+  stopCustomFocusTimer();
+  const scheduledAt = nextFocusNudgeAt;
+  const delay = Math.max(0, scheduledAt - Date.now());
+
+  customFocusTimer = setTimeout(() => {
+    customFocusTimer = null;
+
+    if (!mainWindow || customFocusDurationMs === null || nextFocusNudgeAt !== scheduledAt) {
+      return;
+    }
+
+    if (powerMonitor.getSystemIdleTime() < BREAK_THRESHOLD_SECONDS) {
+      triggerFocusNudge();
+    }
+  }, delay);
+}
+
+function getRandomBounds() {
+  const display = screen.getPrimaryDisplay();
+  const area = display.workArea;
+  const padding = 22;
+
+  return {
+    x: Math.round(area.x + padding + Math.random() * Math.max(1, area.width - PET_SIZE.width - padding * 2)),
+    y: Math.round(area.y + padding + Math.random() * Math.max(1, area.height - PET_SIZE.height - padding * 2))
+  };
+}
+
+function runSprint() {
+  if (!mainWindow) {
+    return;
+  }
+
+  stopSprint();
+
+  const start = mainWindow.getBounds();
+  const route = [start];
+  const hopCount = 5 + Math.floor(Math.random() * 3);
+
+  for (let index = 0; index < hopCount; index += 1) {
+    route.push({ ...getRandomBounds(), ...PET_SIZE });
+  }
+
+  route.push(getRestingBounds());
+
+  let routeIndex = 0;
+  mainWindow.webContents.send("pet:sprint-start");
+
+  sprintTimer = setInterval(() => {
+    if (!mainWindow) {
+      stopSprint();
+      return;
+    }
+
+    const nextBounds = route[routeIndex];
+    mainWindow.setBounds(nextBounds, true);
+    routeIndex += 1;
+
+    if (routeIndex >= route.length) {
+      stopSprint();
+      mainWindow.setBounds(getRestingBounds(), true);
+      mainWindow.webContents.send("pet:sprint-end");
+    }
+  }, 180);
+}
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    ...PET_SIZE,
+    frame: false,
+    transparent: true,
+    hasShadow: false,
+    resizable: false,
+    movable: true,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    fullscreenable: false,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js")
+    }
+  });
+
+  mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  mainWindow.setAlwaysOnTop(true, "screen-saver");
+  mainWindow.loadFile(path.join(__dirname, "renderer.html"));
+  moveToCorner(currentCorner);
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
+}
+
+function startBehaviorLoop() {
+  clearInterval(behaviorTimer);
+  behaviorTimer = setInterval(() => {
+    if (!mainWindow) {
+      return;
+    }
+
+    const now = Date.now();
+    const idleSeconds = powerMonitor.getSystemIdleTime();
+    const nowActive = idleSeconds < BREAK_THRESHOLD_SECONDS;
+    const nowOnBreak = idleSeconds >= BREAK_THRESHOLD_SECONDS;
+
+    if (nowOnBreak && !hasQualifiedBreak) {
+      hasQualifiedBreak = true;
+      isWaitingForReturn = true;
+      mainWindow.webContents.send("pet:break-qualified");
+    }
+
+    if (!nowActive) {
+      isActive = false;
+      return;
+    }
+
+    if (!isActive) {
+      isActive = true;
+
+      if (hasQualifiedBreak) {
+        if (isWaitingForReturn) {
+          isWaitingForReturn = false;
+          mainWindow.webContents.send("pet:break-ended");
+        }
+        resetFocusTimer();
+        mainWindow.webContents.send("pet:focus-reset");
+        return;
+      }
+    }
+
+    triggerFocusNudge(now);
+  }, BEHAVIOR_CHECK_MS);
+}
+
+function startWorkStatsLoop() {
+  clearInterval(workStatsTimer);
+
+  workStatsTimer = setInterval(() => {
+    const idleSeconds = powerMonitor.getSystemIdleTime();
+
+    if (idleSeconds < BREAK_THRESHOLD_SECONDS) {
+      addWorkedTime(WORK_STATS_SAMPLE_MS);
+    }
+
+    if (workStatsDirty && getTodayWorkedMilliseconds() % WORK_STATS_SAVE_MS < WORK_STATS_SAMPLE_MS) {
+      saveWorkStats();
+    }
+  }, WORK_STATS_SAMPLE_MS);
+}
+
+app.whenReady().then(() => {
+  loadWorkStats();
+  loadCustomDialogues();
+  resetFocusTimer();
+  createWindow();
+  startBehaviorLoop();
+  startWorkStatsLoop();
+  globalShortcut.register("CommandOrControl+Shift+F", () => {
+    if (!mainWindow) {
+      return;
+    }
+    mainWindow.webContents.send("pet:summon");
+    moveToCorner("bottom-right");
+    mainWindow.showInactive();
+  });
+
+  globalShortcut.register("CommandOrControl+Shift+Q", () => {
+    app.quit();
+  });
+});
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
+});
+
+app.on("will-quit", () => {
+  clearInterval(behaviorTimer);
+  clearInterval(workStatsTimer);
+  stopSprint();
+  stopCustomFocusTimer();
+  saveWorkStats();
+  globalShortcut.unregisterAll();
+});
+
+ipcMain.handle("pet:move-corner", (_, corner) => {
+  moveToCorner(corner);
+});
+
+ipcMain.handle("pet:get-corner", () => currentCorner);
+ipcMain.handle("pet:show-context-menu", showContextMenu);
+ipcMain.handle("pet:get-today-work-summary", getWorkSummary);
+ipcMain.handle("pet:set-custom-focus-duration", (_, minutes) => setCustomFocusDuration(minutes));
+ipcMain.handle("pet:get-dialogues", () => customDialogues);
+ipcMain.handle("pet:add-dialogue", (_, text) => {
+  const dialogue = {
+    id: randomUUID(),
+    text: normalizeDialogueText(text)
+  };
+  customDialogues.push(dialogue);
+  saveCustomDialogues();
+  return dialogue;
+});
+ipcMain.handle("pet:update-dialogue", (_, id, text) => {
+  const dialogue = customDialogues.find((item) => item.id === id);
+
+  if (!dialogue) {
+    throw new Error("这条对话已经不存在了。");
+  }
+
+  dialogue.text = normalizeDialogueText(text);
+  saveCustomDialogues();
+  return dialogue;
+});
+ipcMain.handle("pet:delete-dialogue", (_, id) => {
+  const previousLength = customDialogues.length;
+  customDialogues = customDialogues.filter((item) => item.id !== id);
+
+  if (customDialogues.length === previousLength) {
+    throw new Error("这条对话已经不存在了。");
+  }
+
+  saveCustomDialogues();
+});
+ipcMain.handle("pet:drag-start", (_, screenX, screenY) => {
+  if (!mainWindow || !Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+    return;
+  }
+
+  const bounds = mainWindow.getBounds();
+  dragState = {
+    offsetX: screenX - bounds.x,
+    offsetY: screenY - bounds.y
+  };
+});
+ipcMain.handle("pet:drag-to", (_, screenX, screenY) => {
+  moveWindowToPointer(screenX, screenY);
+});
+ipcMain.handle("pet:drag-end", () => {
+  dragState = null;
+});
