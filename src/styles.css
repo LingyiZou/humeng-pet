@@ -1,5 +1,6 @@
 :root {
   color-scheme: light;
+  --pet-scale: 1;
   --bubble: rgba(255, 250, 239, 0.96);
   --shadow: rgba(96, 46, 18, 0.18);
   --line: #5c2a1b;
@@ -27,26 +28,27 @@ body {
 
 .pet-shell {
   position: absolute;
-  right: 18px;
-  bottom: 18px;
-  width: 240px;
-  height: 300px;
+  inset: 0;
 }
 
 .pet {
   position: absolute;
-  inset: 0;
+  left: 50%;
+  bottom: 0;
+  width: calc(260px * var(--pet-scale));
+  height: calc(320px * var(--pet-scale));
   z-index: 1;
   border: 0;
   background: transparent;
   cursor: pointer;
   padding: 0;
   filter: drop-shadow(0 20px 30px rgba(106, 54, 22, 0.12));
+  transform: translateX(-50%);
   transition: transform 180ms ease;
 }
 
 .pet:hover {
-  transform: translateY(-2px) scale(1.015);
+  transform: translateX(-50%) translateY(-2px);
 }
 
 .pet.is-dragging {
@@ -63,6 +65,7 @@ body {
   border-radius: 999px;
   background: radial-gradient(ellipse at center, rgba(90, 51, 27, 0.24) 0%, rgba(90, 51, 27, 0.08) 55%, rgba(90, 51, 27, 0) 100%);
   filter: blur(8px);
+  z-index: 0;
 }
 
 .pet-art {
@@ -74,6 +77,8 @@ body {
   object-position: center bottom;
   transform-origin: center bottom;
   animation: pet-breathe 4.6s ease-in-out infinite;
+  transition: transform 180ms ease;
+  z-index: 2;
 }
 
 .bubble {
@@ -195,6 +200,20 @@ body {
   font-size: 12px;
 }
 
+.schedule-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 8px;
+  color: #76513d;
+  font-size: 12px;
+}
+
+.schedule-grid input {
+  min-height: 34px;
+  padding: 6px 8px;
+}
+
 .dialogue-form button {
   align-self: flex-end;
   padding: 6px 12px;
@@ -259,11 +278,11 @@ body {
 }
 
 .pet.is-searching {
-  transform: translateY(-8px) rotate(-3deg);
+  transform: translateX(-50%) translateY(-8px) rotate(-3deg);
 }
 
 .pet.is-sprinting {
-  transform: rotate(-6deg) scale(1.03);
+  transform: translateX(-50%) rotate(-6deg);
 }
 
 .pet.is-sprinting .pet-art {

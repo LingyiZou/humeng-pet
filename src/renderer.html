@@ -11,7 +11,7 @@
       <section class="pet-shell" id="pet-shell">
         <button class="pet" id="pet" aria-label="和狐朦互动">
           <span class="pet-shadow"></span>
-          <img class="pet-art" src="./assets/humeng-guard.png" alt="站岗中的狐朦" draggable="false" />
+          <img class="pet-art" id="pet-art" src="./assets/humeng-guard.png" alt="站岗中的狐朦" draggable="false" />
         </button>
         <div class="bubble hidden" id="bubble"></div>
       </section>
@@ -41,6 +41,26 @@
             <button type="submit">开始倒计时</button>
           </form>
           <p class="dialogue-error hidden" id="duration-error" role="alert"></p>
+        </div>
+      </section>
+      <section class="dialogue-modal hidden" id="schedule-modal" aria-label="设置工作安排">
+        <div class="dialogue-card" role="dialog" aria-modal="true" aria-labelledby="schedule-title">
+          <div class="dialogue-heading">
+            <h1 id="schedule-title">工作安排</h1>
+            <button class="dialogue-close" id="schedule-close" type="button" aria-label="关闭">×</button>
+          </div>
+          <form class="dialogue-form" id="schedule-form">
+            <div class="schedule-grid">
+              <label for="schedule-work-input">工作时间（分钟）</label>
+              <input id="schedule-work-input" type="number" min="1" max="480" step="1" inputmode="numeric" required />
+              <label for="schedule-followup-input">再次提醒间隔（分钟）</label>
+              <input id="schedule-followup-input" type="number" min="1" max="480" step="1" inputmode="numeric" required />
+              <label for="schedule-break-input">休息时间（分钟）</label>
+              <input id="schedule-break-input" type="number" min="1" max="480" step="1" inputmode="numeric" required />
+            </div>
+            <button type="submit">保存安排</button>
+          </form>
+          <p class="dialogue-error hidden" id="schedule-error" role="alert"></p>
         </div>
       </section>
     </main>

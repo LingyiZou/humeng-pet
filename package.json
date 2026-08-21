@@ -1,6 +1,6 @@
 {
   "name": "fumeng-pet",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A desktop fox pet that naps in screen corners and occasionally interacts with the user.",
   "main": "src/main.js",
   "scripts": {
@@ -20,6 +20,7 @@
     "directories": {
       "output": "release"
     },
+    "artifactName": "${name}-${version}-${arch}.${ext}",
     "files": [
       "src/**/*",
       "package.json"

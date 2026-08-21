@@ -75,6 +75,11 @@ for (let y = 0; y < source.height; y += 1) {
     }
 
     source.data[offset + 3] = alpha;
+    if (alpha === 0) {
+      source.data[offset] = 0;
+      source.data[offset + 1] = 0;
+      source.data[offset + 2] = 0;
+    }
 
     if (alpha >= 8) {
       minX = Math.min(minX, x);
