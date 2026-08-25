@@ -377,6 +377,10 @@ function showContextMenu() {
       click: runAndResetFocusTimer
     },
     {
+      label: "动物表演",
+      click: () => mainWindow?.webContents.send("pet:animal-performance")
+    },
+    {
       label: "工作时间",
       click: () => mainWindow?.webContents.send("pet:show-work-summary", getWorkSummary())
     },

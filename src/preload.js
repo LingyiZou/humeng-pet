@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld("petAPI", {
   onBreakEnded: (callback) => ipcRenderer.on("pet:break-ended", callback),
   onSprintStart: (callback) => ipcRenderer.on("pet:sprint-start", callback),
   onSprintEnd: (callback) => ipcRenderer.on("pet:sprint-end", callback),
+  onAnimalPerformance: (callback) => ipcRenderer.on("pet:animal-performance", callback),
   onManualSprint: (callback) => ipcRenderer.on("pet:manual-sprint", callback),
   onShowWorkSummary: (callback) => ipcRenderer.on("pet:show-work-summary", (_, summary) => callback(summary)),
   onOpenDialogueManager: (callback) => ipcRenderer.on("pet:open-dialogue-manager", callback),

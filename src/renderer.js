@@ -1,6 +1,7 @@
 // 狐朦桌宠渲染逻辑：控制站岗反馈、气泡、奔跑动画与菜单结果展示。
 const pet = document.getElementById("pet");
 const petArt = document.getElementById("pet-art");
+const petVideo = document.getElementById("pet-video");
 const bubble = document.getElementById("bubble");
 const shell = document.getElementById("pet-shell");
 const dialogueModal = document.getElementById("dialogue-modal");
@@ -41,8 +42,26 @@ let customDialogues = [];
 let editingDialogueId = null;
 let pointerPress = null;
 let suppressNextClick = false;
+let currentPetAge = null;
+let performanceTimer = null;
+let performancePlaying = false;
 
 const DRAG_THRESHOLD_PIXELS = 6;
+const BUBBLE_EDGE_MARGIN = 6;
+const BUBBLE_PET_GAP = 8;
+const PERFORMANCE_MIN_DELAY_MS = 4 * 60 * 1000;
+const PERFORMANCE_MAX_DELAY_MS = 6 * 60 * 1000;
+const GUARD_PERFORMANCES = Object.freeze([
+  "./assets/humeng-guard.webm",
+  "./assets/humeng-guard2.webm"
+]);
+const PERFORMANCE_SOURCES = Object.freeze({
+  20: Object.freeze(["./assets/humeng-hatchling.webm"]),
+  40: Object.freeze(["./assets/humeng-pacifier.webm"]),
+  60: GUARD_PERFORMANCES,
+  80: GUARD_PERFORMANCES,
+  100: GUARD_PERFORMANCES
+});
 
 const PET_APPEARANCES = {
   20: { src: "./assets/humeng-hatchling.png", alt: "破壳的狐朦" },
@@ -51,9 +70,31 @@ const PET_APPEARANCES = {
   default: { src: "./assets/humeng-guard.png", alt: "站岗中的狐朦" }
 };
 
+function positionBubbleNearPet() {
+  if (bubble.classList.contains("hidden")) {
+    return;
+  }
+
+  const petBounds = pet.getBoundingClientRect();
+  const bubbleWidth = bubble.offsetWidth;
+  const bubbleHeight = bubble.offsetHeight;
+  const petCenterX = petBounds.left + petBounds.width / 2;
+  const maximumLeft = Math.max(BUBBLE_EDGE_MARGIN, window.innerWidth - bubbleWidth - BUBBLE_EDGE_MARGIN);
+  const left = Math.min(maximumLeft, Math.max(BUBBLE_EDGE_MARGIN, petCenterX - bubbleWidth / 2));
+  const preferredTop = petBounds.top - bubbleHeight - BUBBLE_PET_GAP;
+  const maximumTop = Math.max(BUBBLE_EDGE_MARGIN, window.innerHeight - bubbleHeight - BUBBLE_EDGE_MARGIN);
+  const top = Math.min(maximumTop, Math.max(BUBBLE_EDGE_MARGIN, preferredTop));
+  const tailCenter = Math.min(bubbleWidth - 18, Math.max(18, petCenterX - left));
+
+  bubble.style.left = `${Math.round(left)}px`;
+  bubble.style.top = `${Math.round(top)}px`;
+  bubble.style.setProperty("--bubble-tail-left", `${Math.round(tailCenter - 7)}px`);
+}
+
 function speak(text, duration = 3200) {
   bubble.textContent = text;
   bubble.classList.remove("hidden");
+  positionBubbleNearPet();
   keepBubbleVisible = false;
   window.clearTimeout(speak.hideTimer);
   speak.hideTimer = window.setTimeout(() => {
@@ -64,6 +105,7 @@ function speak(text, duration = 3200) {
 function showPersistentBubble(text) {
   bubble.textContent = text;
   bubble.classList.remove("hidden");
+  positionBubbleNearPet();
   keepBubbleVisible = true;
   window.clearTimeout(speak.hideTimer);
 }
@@ -241,10 +283,96 @@ function setPetAppearance(appearance) {
   petArt.alt = appearance.alt;
 }
 
+function getPerformanceDelay() {
+  const delayRange = PERFORMANCE_MAX_DELAY_MS - PERFORMANCE_MIN_DELAY_MS;
+  return PERFORMANCE_MIN_DELAY_MS + Math.random() * delayRange;
+}
+
+function hasOpenPetModal() {
+  return [dialogueModal, durationModal, scheduleModal].some((modal) => !modal.classList.contains("hidden"));
+}
+
+function isPerformanceBlocked() {
+  return pointerPress !== null || pet.classList.contains("is-sprinting") || hasOpenPetModal();
+}
+
+function getPerformanceSources(age = currentPetAge) {
+  return PERFORMANCE_SOURCES[age] || [];
+}
+
+function clearPerformanceTimer() {
+  window.clearTimeout(performanceTimer);
+  performanceTimer = null;
+}
+
+function playAnimalPerformance() {
+  const sources = getPerformanceSources();
+  if (sources.length === 0 || isPerformanceBlocked()) {
+    return false;
+  }
+
+  clearPerformanceTimer();
+  performancePlaying = true;
+  const source = randomPick(sources);
+  if (petVideo.getAttribute("src") !== source) {
+    petVideo.src = source;
+    petVideo.load();
+  } else if (petVideo.readyState > 0) {
+    petVideo.currentTime = 0;
+  }
+  petArt.hidden = true;
+  petVideo.hidden = false;
+
+  const playback = petVideo.play();
+  if (playback) {
+    playback.catch(() => finishAnimalPerformance());
+  }
+  return true;
+}
+
+function scheduleAnimalPerformance() {
+  clearPerformanceTimer();
+  if (getPerformanceSources().length === 0) {
+    return;
+  }
+
+  performanceTimer = window.setTimeout(() => {
+    performanceTimer = null;
+
+    if (getPerformanceSources().length === 0) {
+      return;
+    }
+
+    if (!playAnimalPerformance()) {
+      scheduleAnimalPerformance();
+    }
+  }, getPerformanceDelay());
+}
+
+function finishAnimalPerformance({ reschedule = true } = {}) {
+  const shouldResetPlayback = performancePlaying || !petVideo.paused;
+  performancePlaying = false;
+  petVideo.pause();
+  if (shouldResetPlayback && petVideo.readyState > 0) {
+    petVideo.currentTime = 0;
+  }
+  petVideo.hidden = true;
+  petArt.hidden = false;
+
+  if (reschedule) {
+    scheduleAnimalPerformance();
+  }
+}
+
 function applyPetAge(age) {
+  currentPetAge = age;
+  clearPerformanceTimer();
+  finishAnimalPerformance({ reschedule: false });
   document.body.dataset.petAge = String(age);
   document.documentElement.style.setProperty("--pet-scale", String(age / 100));
   setPetAppearance(getPetAppearance(age));
+  positionBubbleNearPet();
+  scheduleAnimalPerformance();
 }
 
 function doNudge(text, duration = 4200) {
@@ -470,6 +598,8 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
+window.addEventListener("resize", positionBubbleNearPet);
+
 window.petAPI.onSummon(() => {
   setAwake(true);
   speak("你一叫我，我就来了。", 3600);
@@ -525,11 +655,30 @@ window.petAPI.onBreakEnded(() => {
 
 window.petAPI.onSprintStart(() => {
   pet.classList.add("is-sprinting");
+  if (performancePlaying) {
+    finishAnimalPerformance();
+  }
   setAwake(true);
 });
 
 window.petAPI.onSprintEnd(() => {
   pet.classList.remove("is-sprinting");
+});
+
+petVideo.addEventListener("ended", () => finishAnimalPerformance());
+petVideo.addEventListener("error", () => finishAnimalPerformance());
+
+window.petAPI.onAnimalPerformance(() => {
+  if (currentPetAge === 200) {
+    setAwake(true);
+    speak("做个人吧", 3200);
+    return;
+  }
+
+  if (!playAnimalPerformance()) {
+    speak("狐朦正在忙，这次表演先等等。", 3200);
+    scheduleAnimalPerformance();
+  }
 });
 
 window.petAPI.onManualSprint(async () => {
