@@ -10,6 +10,7 @@ let behaviorTimer = null;
 let sprintTimer = null;
 let workStatsTimer = null;
 let customFocusTimer = null;
+let displayRecoveryTimer = null;
 let workStatsPath = "";
 let workStatsDirty = false;
 let workStats = {};
@@ -40,6 +41,12 @@ let nextFocusNudgeAt = Date.now() + DEFAULT_WORK_SCHEDULE.workMinutes * 60 * 100
 let focusNudgeCount = 0;
 let focusStartedAt = Date.now();
 let customFocusDurationMs = null;
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
 
 function getDateKey(timestamp = Date.now()) {
   const date = new Date(timestamp);
@@ -472,6 +479,74 @@ function clampBoundsToDisplay(bounds, display) {
   };
 }
 
+function getIntersectionArea(bounds, area) {
+  const width = Math.max(0, Math.min(bounds.x + bounds.width, area.x + area.width) - Math.max(bounds.x, area.x));
+  const height = Math.max(0, Math.min(bounds.y + bounds.height, area.y + area.height) - Math.max(bounds.y, area.y));
+  return width * height;
+}
+
+function getVisibleDisplayForBounds(bounds) {
+  let bestDisplay = null;
+  let bestIntersectionArea = 0;
+
+  for (const display of screen.getAllDisplays()) {
+    const intersectionArea = getIntersectionArea(bounds, display.workArea);
+
+    if (intersectionArea > bestIntersectionArea) {
+      bestDisplay = display;
+      bestIntersectionArea = intersectionArea;
+    }
+  }
+
+  return bestDisplay;
+}
+
+function boundsAreEqual(first, second) {
+  return first.x === second.x
+    && first.y === second.y
+    && first.width === second.width
+    && first.height === second.height;
+}
+
+function recoverWindowToVisibleDisplay() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  const wasSprinting = Boolean(sprintTimer);
+  stopSprint();
+  dragState = null;
+
+  const previousBounds = getRestingBounds();
+  const visibleDisplay = getVisibleDisplayForBounds(previousBounds);
+
+  if (visibleDisplay) {
+    restingBounds = clampBoundsToDisplay(previousBounds, visibleDisplay);
+  } else {
+    currentCorner = "bottom-right";
+    restingBounds = { ...getCornerBounds(currentCorner), ...getPetSize() };
+    mainWindow.webContents.send("pet:corner-changed", currentCorner);
+  }
+
+  if (wasSprinting) {
+    mainWindow.webContents.send("pet:sprint-end");
+  }
+
+  if (!boundsAreEqual(mainWindow.getBounds(), restingBounds)) {
+    mainWindow.setBounds(restingBounds, true);
+  }
+
+  mainWindow.showInactive();
+}
+
+function scheduleWindowRecovery() {
+  clearTimeout(displayRecoveryTimer);
+  displayRecoveryTimer = setTimeout(() => {
+    displayRecoveryTimer = null;
+    recoverWindowToVisibleDisplay();
+  }, 250);
+}
+
 function setPetAge(value) {
   const nextAge = normalizePetAge(value);
   const previousBounds = getRestingBounds();
@@ -615,6 +690,45 @@ function runSprint() {
   }, 180);
 }
 
+function summonPet() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+
+  const wasSprinting = Boolean(sprintTimer);
+  stopSprint();
+  dragState = null;
+
+  if (wasSprinting) {
+    mainWindow.webContents.send("pet:sprint-end");
+  }
+
+  mainWindow.webContents.send("pet:summon");
+  moveToCorner("bottom-right");
+  mainWindow.showInactive();
+}
+
+function restartPet() {
+  app.relaunch();
+  app.quit();
+}
+
+function configureDock() {
+  if (process.platform !== "darwin" || !app.dock) {
+    return;
+  }
+
+  app.dock.show();
+  app.dock.setIcon(path.join(__dirname, "assets", "humeng-guard.png"));
+  app.dock.setMenu(Menu.buildFromTemplate([
+    { label: "召回狐朦", click: summonPet },
+    { label: "重新启动狐朦", click: restartPet },
+    { type: "separator" },
+    { label: "退出狐朦", click: () => app.quit() }
+  ]));
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     ...getPetSize(),
@@ -623,7 +737,7 @@ function createWindow() {
     hasShadow: false,
     resizable: false,
     movable: true,
-    skipTaskbar: true,
+    skipTaskbar: process.platform !== "darwin",
     alwaysOnTop: true,
     fullscreenable: false,
     webPreferences: {
@@ -705,20 +819,23 @@ app.whenReady().then(() => {
   loadCustomDialogues();
   resetFocusTimer();
   createWindow();
+  configureDock();
   startBehaviorLoop();
   startWorkStatsLoop();
-  globalShortcut.register("CommandOrControl+Shift+F", () => {
-    if (!mainWindow) {
-      return;
-    }
-    mainWindow.webContents.send("pet:summon");
-    moveToCorner("bottom-right");
-    mainWindow.showInactive();
-  });
+  screen.on("display-added", scheduleWindowRecovery);
+  screen.on("display-removed", scheduleWindowRecovery);
+  screen.on("display-metrics-changed", scheduleWindowRecovery);
+  globalShortcut.register("CommandOrControl+Shift+F", summonPet);
 
   globalShortcut.register("CommandOrControl+Shift+Q", () => {
     app.quit();
   });
+});
+
+app.on("second-instance", summonPet);
+
+app.on("activate", () => {
+  summonPet();
 });
 
 app.on("window-all-closed", () => {
@@ -732,7 +849,13 @@ app.on("will-quit", () => {
   clearInterval(workStatsTimer);
   stopSprint();
   stopCustomFocusTimer();
+  clearTimeout(displayRecoveryTimer);
   saveWorkStats();
+  if (app.isReady()) {
+    screen.removeListener("display-added", scheduleWindowRecovery);
+    screen.removeListener("display-removed", scheduleWindowRecovery);
+    screen.removeListener("display-metrics-changed", scheduleWindowRecovery);
+  }
   globalShortcut.unregisterAll();
 });
 
