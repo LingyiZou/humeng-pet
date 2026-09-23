@@ -720,7 +720,7 @@ function configureDock() {
   }
 
   app.dock.show();
-  app.dock.setIcon(path.join(__dirname, "assets", "humeng-guard.png"));
+  app.dock.setIcon(path.join(__dirname, "assets", "humeng-dock-icon.png"));
   app.dock.setMenu(Menu.buildFromTemplate([
     { label: "召回狐朦", click: summonPet },
     { label: "重新启动狐朦", click: restartPet },

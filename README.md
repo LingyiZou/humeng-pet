@@ -22,6 +22,7 @@
 - “工作时间”会显示今日累计工作时间、当前计时阶段、阶段已用时间和距下次提醒时间
 - `Ctrl/Cmd + Shift + Q` 可随时退出 app
 - macOS Dock 会常驻狐朦图标；点击图标可召回，右击可召回、重新启动或退出
+- Dock 与 macOS 应用图标使用狐朦大眼圆框卖萌头像
 - 外接屏断开或分辨率变化后，狐朦会自动回到仍然可见的工作区
 
 ## 当前提醒规则
@@ -108,13 +109,14 @@ npm start
 
 ## GitHub 与 macOS 发布
 
-### 本次交付（0.1.3）
+### 本次交付（0.1.4）
 
 - 已加入可保存的工作安排，以及不同年龄形态的狐朦素材。
 - 已加入 20% 至 100% 的透明无声动物表演动画，以及 200% 的专属文字回应。
 - 已修复小体型狐朦的气泡距离过远问题，气泡会贴近本体并保持在窗口内。
 - 已修复大屏切换到小屏后窗口可能留在屏幕外的问题，并加入 Dock 召回、重启和退出入口。
-- 源码提交与 macOS 安装包均对应 `package.json` 中的 `0.1.3` 版本。
+- 已为 Dock 和 macOS 应用包更换狐朦大眼圆框正方形图标。
+- 源码提交与 macOS 安装包均对应 `package.json` 中的 `0.1.4` 版本。
 
 仓库已配置为不提交 `node_modules`、构建产物及本机编辑器文件。提交到 GitHub 前，先在 GitHub 创建一个空仓库，然后在项目目录执行：
 
@@ -207,6 +209,8 @@ npm start
   从用户参考照片生成的绿幕中间素材，保留用于重新调整透明边缘。
 - `src/assets/humeng-guard.png`
   桌宠当前使用的写实狐獴透明素材。
+- `src/assets/humeng-dock-icon.png`
+  Dock 与 macOS 应用包使用的正方形大眼圆框狐朦图标。
 - `src/assets/humeng-hatchling.png`、`src/assets/humeng-hatchling.webm`
   20% 幼年形态使用的透明常驻帧与无声动画。
 - `src/assets/humeng-pacifier.png`、`src/assets/humeng-pacifier.webm`
